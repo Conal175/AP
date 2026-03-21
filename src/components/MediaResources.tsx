@@ -5,7 +5,8 @@ import {
   ChevronDown, Globe, Edit3, X, FolderPlus,
   Link2, Video, ImageIcon, FileText, Loader2, ChevronRight
 } from 'lucide-react';
-import { getProjectData, setProjectData } from '../store';
+// ĐÃ SỬA TẠI ĐÂY: Import đúng tên hàm từ store
+import { fetchProjectData, saveProjectData } from '../store';
 import { useAuth } from '../contexts/AuthContext';
 
 // ==========================================
@@ -123,8 +124,9 @@ export function MediaResources({ projectId }: Props) {
     const loadData = async () => {
       setLoading(true);
       try {
-        const savedFanpages = await getProjectData(projectId, 'fanpages');
-        let savedFolders = await getProjectData(projectId, 'mediaFolders');
+        // ĐÃ SỬA TẠI ĐÂY: Dùng fetchProjectData
+        const savedFanpages = await fetchProjectData(projectId, 'fanpages');
+        let savedFolders = await fetchProjectData(projectId, 'mediaFolders');
         
         // TỰ ĐỘNG VÁ LỖI: Kiểm tra và bơm Checklist vào các Fanpage bị lỗi cấu trúc
         if (savedFanpages && Array.isArray(savedFanpages)) {
@@ -140,7 +142,8 @@ export function MediaResources({ projectId }: Props) {
         
         if (!savedFolders || savedFolders.length === 0) {
           savedFolders = createDefaultFolders(projectId);
-          await setProjectData(projectId, 'mediaFolders', savedFolders);
+          // ĐÃ SỬA TẠI ĐÂY: Dùng saveProjectData
+          await saveProjectData(projectId, 'mediaFolders', savedFolders);
         }
         setFolders(savedFolders);
       } catch (error) {
@@ -154,12 +157,14 @@ export function MediaResources({ projectId }: Props) {
   // Hàm Sync Data 
   const persistFanpages = async (newData: Fanpage[]) => {
     setFanpages(newData);
-    await setProjectData(projectId, 'fanpages', newData);
+    // ĐÃ SỬA TẠI ĐÂY: Dùng saveProjectData
+    await saveProjectData(projectId, 'fanpages', newData);
   };
 
   const persistFolders = async (newData: MediaFolder[]) => {
     setFolders(newData);
-    await setProjectData(projectId, 'mediaFolders', newData);
+    // ĐÃ SỬA TẠI ĐÂY: Dùng saveProjectData
+    await saveProjectData(projectId, 'mediaFolders', newData);
   };
 
   // ================= FANPAGE HANDLERS =================
