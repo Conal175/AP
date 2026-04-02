@@ -1,33 +1,34 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getSupabase } from './lib/supabase';
-import type { Project } from './types';
+import type { Project, DailyLog } from './types';
 import { toast } from './components/ui/Toast';
 
 // ==========================================
-// 1. DỮ LIỆU DỰ ÁN CỐT LÕI (ĐÃ ÁP DỤNG SOFT DELETE)
+// 1. DỮ LIỆU DỰ ÁN CỐT LÕI (ĐÃ ÁP DỤNG PHÂN QUYỀN ĐA KHÔNG GIAN)
 // ==========================================
 export const fetchProjects = async (): Promise<Project[]> => {
   try {
     const supabase = getSupabase();
     if (!supabase) return [];
     
-    // Chỉ lấy những dự án chưa bị xóa (is_deleted = false hoặc null)
-    const { data, error } = await supabase
-      .from('projects')
-      .select('*')
-      .not('is_deleted', 'eq', true) 
-      .order('created_at', { ascending: false });
+    // Sử dụng hàm RPC để chỉ lấy dự án mà user này được cấp quyền (hoặc lấy tất cả nếu là admin)
+    const { data, error } = await supabase.rpc('get_my_projects');
     
     if (error || !data) return [];
     
-    return data.map(p => ({ id: p.id, name: p.name, description: p.description, createdAt: p.created_at }));
+    return data.map((p: any) => ({ 
+      id: p.id, 
+      name: p.name, 
+      description: p.description, 
+      createdAt: p.created_at 
+    }));
   } catch (err) {
     console.error("Lỗi fetchProjects:", err);
     return [];
   }
 };
 
-export const insertProject = async (project: Project): Promise<boolean> => {
+export const insertProject = async (project: Project, creatorId?: string): Promise<boolean> => {
   try {
     const supabase = getSupabase();
     if (!supabase) return false;
@@ -35,6 +36,25 @@ export const insertProject = async (project: Project): Promise<boolean> => {
       id: project.id, name: project.name, description: project.description, created_at: project.createdAt
     }]);
     
+    // Tự động gán quyền cao nhất cho người tạo dự án (nếu không phải admin tối cao)
+    if (!error && creatorId) {
+      const fullPerms = {
+        dashboard: { access: true, delete: true }, 
+        orders: { access: true, delete: true },
+        action_plan: { access: true, delete: true }, 
+        strategy_product: { access: true, delete: true },
+        strategy_customer: { access: true, delete: true }, 
+        competitors: { access: true, delete: true },
+        daily_report: { access: true, delete: true }, 
+        media: { access: true, delete: true }
+      };
+      await supabase.from('project_members').insert({ 
+        project_id: project.id, 
+        user_id: creatorId, 
+        permissions: fullPerms 
+      });
+    }
+
     if (error) {
       toast.error(`Lỗi tạo dự án từ DB: ${error.message}`);
     }
@@ -44,18 +64,51 @@ export const insertProject = async (project: Project): Promise<boolean> => {
   }
 };
 
-// Đã chuyển từ Hard Delete (.delete) sang Soft Delete (.update)
 export const removeProject = async (id: string): Promise<boolean> => {
   try {
     const supabase = getSupabase();
     if (!supabase) return false;
     
-    // Thay vì xóa vĩnh viễn, ta đánh dấu dự án này là đã xóa
+    // Xóa mềm: đánh dấu dự án này là đã xóa
     const { error } = await supabase.from('projects').update({ is_deleted: true }).eq('id', id);
     return !error;
   } catch (err) {
     return false;
   }
+};
+
+// ==========================================
+// 1.5. API QUẢN LÝ THÀNH VIÊN DỰ ÁN (MỚI)
+// ==========================================
+export interface ProjectMember { 
+  user_id: string; 
+  email: string; 
+  permissions: any; 
+}
+
+export const fetchProjectMembers = async (projectId: string): Promise<ProjectMember[]> => {
+  const supabase = getSupabase(); 
+  if (!supabase) return [];
+  const { data, error } = await supabase.rpc('get_project_members', { p_id: projectId });
+  return error ? [] : data;
+};
+
+export const saveProjectMember = async (projectId: string, userId: string, permissions: any) => {
+  const supabase = getSupabase(); 
+  if (!supabase) return;
+  await supabase.from('project_members').upsert({ 
+    project_id: projectId, 
+    user_id: userId, 
+    permissions 
+  });
+};
+
+export const removeProjectMember = async (projectId: string, userId: string) => {
+  const supabase = getSupabase(); 
+  if (!supabase) return;
+  await supabase.from('project_members').delete()
+    .eq('project_id', projectId)
+    .eq('user_id', userId);
 };
 
 // ==========================================
@@ -161,8 +214,6 @@ export function useSyncData<T>(projectId: string, dataKey: string, initialValue:
 // ==========================================
 // 4. API CHO BẢNG DAILY_LOGS (ĐÃ THÊM LIMIT)
 // ==========================================
-import type { DailyLog } from './types';
-
 export const fetchDailyLogs = async (projectId: string): Promise<DailyLog[]> => {
   const supabase = getSupabase();
   if (!supabase) return [];
@@ -244,7 +295,7 @@ export interface Order {
   shippingDate: string; trackingCode: string; status: string; shippingFee: number;
 }
 
-export const fetchOrders = async (projectId: string, page: number = 1, pageSize: number = 500): Promise<Order[]> => {
+export const fetchOrders = async (projectId: string, page: number = 1, pageSize: number = 5000): Promise<Order[]> => {
   const supabase = getSupabase();
   if (!supabase) return [];
 
