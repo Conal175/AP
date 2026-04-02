@@ -3,36 +3,28 @@ import type { User, Session } from '@supabase/supabase-js';
 import { getSupabase, getSupabaseConfig, decodeJWT } from '../lib/supabase';
 
 export type UserRole = 'admin' | 'manager' | 'member' | 'viewer';
-
-export type PermissionMatrix = Record<string, { view: boolean; edit: boolean; delete: boolean }>;
+// GỘP QUYỀN: Truy cập (Xem + Sửa) và Xóa
+export type PermissionMatrix = Record<string, { access: boolean; delete: boolean }>;
 
 export interface UserWithRole {
-  user_id: string;
-  email: string;
-  role: UserRole;
-  permissions: PermissionMatrix;
-  created_at: string;
+  user_id: string; email: string; role: UserRole; created_at: string;
 }
 
 interface AuthContextType {
   user: User | null;
   session: Session | null;
   role: UserRole;
-  permissions: PermissionMatrix;
+  projectPermissions: Record<string, PermissionMatrix>; // Lưu quyền theo từng ID dự án
   loading: boolean;
   configured: boolean;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
-  resetPassword: (email: string) => Promise<{ error: string | null }>;
   getAllUsers: () => Promise<UserWithRole[]>;
   updateUserRole: (userId: string, newRole: UserRole) => Promise<{ error: string | null }>;
-  updateUserPermissions: (userId: string, newPermissions: PermissionMatrix) => Promise<{ error: string | null }>;
-  checkPermission: (page: string, action: 'view' | 'edit' | 'delete') => boolean;
-  canEdit: boolean;
-  canManage: boolean;
+  checkProjectPermission: (projectId: string | null | undefined, page: string, action: 'access' | 'delete') => boolean;
   isAdmin: boolean;
-  refreshRole: () => void;
+  canManage: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -43,148 +35,61 @@ export function useAuth() {
   return ctx;
 }
 
-// BẢO HIỂM 1: Đọc quyền gốc từ Token để đề phòng DB bị trống
 function getRoleFromSession(session: Session | null): UserRole {
   try {
     if (!session?.access_token) return 'viewer';
     const decoded = decodeJWT(session.access_token);
-    if (!decoded) return 'viewer'; 
-    const role = decoded.user_role as string;
-    if (['admin', 'manager', 'member', 'viewer'].includes(role)) return role as UserRole;
-    return 'viewer';
-  } catch (error) {
-    return 'viewer';
-  }
+    const role = decoded?.user_role as string;
+    return ['admin', 'manager', 'member', 'viewer'].includes(role) ? (role as UserRole) : 'viewer';
+  } catch (error) { return 'viewer'; }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [role, _setRole] = useState<UserRole>('viewer');
-  const [permissions, _setPermissions] = useState<PermissionMatrix>({});
+  const [role, setRole] = useState<UserRole>('viewer');
+  const [projectPermissions, setProjectPermissions] = useState<Record<string, PermissionMatrix>>({});
   const [loading, setLoading] = useState(true);
   const configured = !!getSupabaseConfig();
 
-  const roleRef = useRef<UserRole>('viewer');
-  const permsRef = useRef<PermissionMatrix>({});
-  const isRoleSynced = useRef(false);
-
-  const setRoleData = useCallback((newRole: UserRole, newPerms: PermissionMatrix) => {
-    _setRole(newRole);
-    _setPermissions(newPerms);
-    roleRef.current = newRole;
-    permsRef.current = newPerms;
-  }, []);
-
-  const handleRoleChangedForceLogout = useCallback(async () => {
-    const supabase = getSupabase();
-    if (!supabase) return;
-    alert('⚠️ THÔNG BÁO HỆ THỐNG ⚠️\n\nQuyền truy cập của bạn vừa được cập nhật. Hệ thống sẽ tiến hành đăng xuất để đồng bộ dữ liệu.\n\nVui lòng đăng nhập lại!');
-    await supabase.auth.signOut();
-    setUser(null);
-    setSession(null);
-    setRoleData('viewer', {});
-    isRoleSynced.current = false;
-    window.location.reload();
-  }, [setRoleData]);
-
-  // HÀM LẤY QUYỀN (ĐÃ FIX LỖI ĐỌC DỮ LIỆU TỪ MẢNG)
   const syncLiveRole = useCallback(async (currentSession: Session | null) => {
     if (!currentSession?.user) {
-      setRoleData('viewer', {});
-      isRoleSynced.current = true;
+      setRole('viewer'); setProjectPermissions({});
       return;
     }
 
-    // Luôn lấy Token làm gốc bảo hiểm
     let currentRole = getRoleFromSession(currentSession);
-    let currentPerms: PermissionMatrix = {};
-
     const supabase = getSupabase();
     if (supabase) {
-      try {
-        const { data, error } = await supabase.rpc('get_my_role');
-        
-        // Supabase RPC trả về TABLE sẽ là một mảng, ta cần lấy phần tử đầu tiên
-        const roleData = Array.isArray(data) ? data[0] : data;
-
-        // Chỉ ghi đè quyền khi DB thực sự trả về dữ liệu
-        if (!error && roleData && roleData.role) {
-          currentRole = roleData.role as UserRole;
-          currentPerms = roleData.permissions || {};
-        }
-      } catch (err) {
-        console.error("Lỗi khi fetch live role:", err);
+      // 1. Lấy Role Global
+      const { data: roleData } = await supabase.rpc('get_my_role');
+      const roleObj = Array.isArray(roleData) ? roleData[0] : roleData;
+      if (roleObj && roleObj.role) currentRole = roleObj.role as UserRole;
+      
+      // 2. Lấy toàn bộ Ma trận Quyền trong các Dự án của User này
+      const { data: permsData } = await supabase.rpc('get_my_project_permissions');
+      const permsMap: Record<string, PermissionMatrix> = {};
+      if (permsData) {
+        permsData.forEach((row: any) => {
+          permsMap[row.project_id] = row.permissions || {};
+        });
       }
+      setRole(currentRole);
+      setProjectPermissions(permsMap);
     }
-    
-    setRoleData(currentRole, currentPerms);
-    isRoleSynced.current = true;
-  }, [setRoleData]);
-
-  const refreshRole = useCallback(() => {
-    syncLiveRole(session);
-  }, [session, syncLiveRole]);
+  }, []);
 
   useEffect(() => {
-    const supabase = getSupabase();
-    if (!supabase) {
-      setLoading(false);
-      return;
-    }
-
+    const supabase = getSupabase(); if (!supabase) { setLoading(false); return; }
     let mounted = true;
     supabase.auth.getSession().then(({ data: { session: s } }) => {
-      if (mounted) {
-        setSession(s);
-        setUser(s?.user ?? null);
-        syncLiveRole(s).finally(() => { if (mounted) setLoading(false); });
-      }
+      if (mounted) { setSession(s); setUser(s?.user ?? null); syncLiveRole(s).finally(() => setLoading(false)); }
     });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
-      if (mounted) {
-        setSession(s);
-        setUser(s?.user ?? null);
-        syncLiveRole(s);
-      }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => {
+      if (mounted) { setSession(s); setUser(s?.user ?? null); syncLiveRole(s); }
     });
-
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
+    return () => { mounted = false; subscription.unsubscribe(); };
   }, [configured, syncLiveRole]);
-
-  useEffect(() => {
-    const supabase = getSupabase();
-    if (!supabase || !user?.id) return;
-
-    const roleSubscription = supabase.channel(`role-update-${user.id}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'user_roles', filter: `user_id=eq.${user.id}` },
-        () => handleRoleChangedForceLogout()
-      ).subscribe();
-
-    const intervalId = setInterval(async () => {
-      if (!isRoleSynced.current) return;
-      try {
-        const { data, error } = await supabase.rpc('get_my_role');
-        const roleData = Array.isArray(data) ? data[0] : data;
-
-        // Kích hoạt force logout nếu có thay đổi
-        if (!error && roleData && roleData.role) {
-          if (roleData.role !== roleRef.current || JSON.stringify(roleData.permissions || {}) !== JSON.stringify(permsRef.current)) {
-            handleRoleChangedForceLogout();
-          }
-        }
-      } catch (e) {}
-    }, 30000); 
-
-    return () => {
-      supabase.removeChannel(roleSubscription);
-      clearInterval(intervalId);
-    };
-  }, [user?.id, handleRoleChangedForceLogout]);
 
   const signIn = async (email: string, password: string) => {
     const supabase = getSupabase(); if (!supabase) return { error: 'Lỗi' };
@@ -196,11 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
   const signOut = async () => {
     const supabase = getSupabase(); if (supabase) await supabase.auth.signOut();
-    setUser(null); setSession(null); setRoleData('viewer', {}); isRoleSynced.current = false;
-  };
-  const resetPassword = async (email: string) => {
-    const supabase = getSupabase(); if (!supabase) return { error: 'Lỗi' };
-    const { error } = await supabase.auth.resetPasswordForEmail(email); return { error: error?.message || null };
+    setUser(null); setSession(null); setRole('viewer'); setProjectPermissions({});
   };
 
   const getAllUsers = async (): Promise<UserWithRole[]> => {
@@ -215,28 +116,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error?.message || null };
   };
 
-  const updateUserPermissions = async (userId: string, newPermissions: PermissionMatrix) => {
-    const supabase = getSupabase(); if (!supabase) return { error: 'Lỗi cấu hình' };
-    const { error } = await supabase.rpc('update_user_permissions', { target_user_id: userId, new_permissions: newPermissions });
-    return { error: error?.message || null };
-  };
-
-  const checkPermission = (page: string, action: 'view' | 'edit' | 'delete') => {
-    if (role === 'admin') return true; 
-    if (!permissions[page]) return false; 
-    return permissions[page][action] === true;
+  // KIỂM TRA QUYỀN TRUY CẬP DỰ ÁN
+  const checkProjectPermission = (projectId: string | null | undefined, page: string, action: 'access' | 'delete') => {
+    if (role === 'admin') return true; // Admin có toàn quyền mọi nơi
+    if (!projectId) return false;
+    
+    const perms = projectPermissions[projectId];
+    if (!perms || !perms[page]) return false;
+    return perms[page][action] === true;
   };
 
   return (
     <AuthContext.Provider value={{
-      user, session, role, permissions, loading, configured,
-      signIn, signUp, signOut, resetPassword,
-      getAllUsers, updateUserRole, updateUserPermissions,
-      checkPermission,
-      canEdit: ['admin', 'manager', 'member'].includes(role),
-      canManage: ['admin', 'manager'].includes(role),
-      isAdmin: role === 'admin',
-      refreshRole,
+      user, session, role, projectPermissions, loading, configured,
+      signIn, signUp, signOut, getAllUsers, updateUserRole,
+      checkProjectPermission, isAdmin: role === 'admin', canManage: ['admin', 'manager'].includes(role)
     }}>
       {children}
     </AuthContext.Provider>
