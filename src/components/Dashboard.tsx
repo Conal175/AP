@@ -73,12 +73,16 @@ export function Dashboard({ project }: Props) {
     );
   };
 
+  // ĐÃ SỬA: Tách chuỗi tĩnh YYYY-MM-DD để tạo Local Time, tránh lỗi lùi ngày do múi giờ UTC+7
   const filteredLogs = useMemo(() => {
     if (!startDate || !endDate) return logs;
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
+    
+    const [sYear, sMonth, sDay] = startDate.split('-').map(Number);
+    const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0);
+    
+    const [eYear, eMonth, eDay] = endDate.split('-').map(Number);
+    const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
+
     return logs.filter(log => {
       const logDate = new Date(log.year, log.month - 1, log.day);
       return logDate >= start && logDate <= end;
