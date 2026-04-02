@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { getSupabase } from './lib/supabase';
 import type { Project } from './types';
 import { toast } from './components/ui/Toast';
@@ -12,13 +12,12 @@ export const fetchProjects = async (): Promise<Project[]> => {
     if (!supabase) return [];
     const { data, error } = await supabase.from('projects').select('*').order('created_at', { ascending: false });
     
-    // CHỐT CHẶN 1: Nếu có lỗi hoặc data bị rỗng (null), lập tức trả về mảng rỗng
     if (error || !data) return [];
     
     return data.map(p => ({ id: p.id, name: p.name, description: p.description, createdAt: p.created_at }));
   } catch (err) {
     console.error("Lỗi fetchProjects:", err);
-    return []; // Trả về mảng rỗng để chống sập web
+    return [];
   }
 };
 
@@ -64,7 +63,6 @@ export const fetchProjectData = async <T>(pid: string, key: string): Promise<T[]
       .eq('data_key', key)
       .single();
 
-    // CHỐT CHẶN 2: Bảo vệ dữ liệu chi tiết dự án
     if (error || !data || !data.data_value) return null;
     return data.data_value as T[];
   } catch (err) {
@@ -84,32 +82,32 @@ export const saveProjectData = async <T>(pid: string, key: string, items: T[]) =
         data_key: key,
         data_value: items,
         updated_at: new Date().toISOString()
-      }, { onConflict: 'project_id,data_key' }); // CỰC KỲ QUAN TRỌNG: Đã xóa khoảng trắng ở đây
+      }, { onConflict: 'project_id,data_key' });
 
-    // BẮT VÀ HIỂN THỊ LỖI NẾU DB CHẶN
     if (error) {
       console.error("Supabase Save Error:", error);
       toast.error(`❌ Lỗi lưu dữ liệu: ${error.message}`);
     }
-
   } catch (err) {
     console.error("Lỗi saveProjectData:", err);
   }
 };
 
 // ==========================================
-// 3. REACT HOOK: DÙNG CHO MỌI TRANG CON
+// 3. REACT HOOK: DÙNG CHO MỌI TRANG CON (ĐÃ CHỐNG SPAM API)
 // ==========================================
 export function useSyncData<T>(projectId: string, dataKey: string, initialValue: T[] = []) {
   const [data, setData] = useState<T[]>(initialValue);
   const [loading, setLoading] = useState(true);
+  
+  // Dùng useRef để giữ bộ đếm thời gian chống spam API
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let isMounted = true;
     setLoading(true);
     fetchProjectData<T>(projectId, dataKey).then(res => {
       if (isMounted) {
-        // CHỐT CHẶN 3: Đảm bảo dữ liệu đẩy ra giao diện luôn là dạng danh sách (Array)
         const safeData = Array.isArray(res) ? res : initialValue;
         setData(safeData);
         setLoading(false);
@@ -123,20 +121,33 @@ export function useSyncData<T>(projectId: string, dataKey: string, initialValue:
     return () => { isMounted = false; };
   }, [projectId, dataKey]);
 
-  const syncData = async (newData: T[]) => {
+  // Dùng useCallback để tối ưu re-render và gom các lần gõ phím
+  const syncData = useCallback((newData: T[]) => {
     const safeData = Array.isArray(newData) ? newData : [];
+    
+    // Cập nhật giao diện mượt mà ngay lập tức
     setData(safeData); 
-    await saveProjectData(projectId, dataKey, safeData);
-  };
+
+    // Nếu người dùng đang gõ, hủy lệnh lưu cũ
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+
+    // Đợi 1 giây (1000ms) sau khi ngừng gõ mới gọi API lưu lên Cloud
+    timeoutRef.current = setTimeout(async () => {
+      await saveProjectData(projectId, dataKey, safeData);
+    }, 1000);
+    
+  }, [projectId, dataKey]);
 
   return { data, syncData, loading };
 }
+
 // ==========================================
-// 4. API CHO BẢNG DAILY_LOGS (TỐI ƯU HIỆU NĂNG)
+// 4. API CHO BẢNG DAILY_LOGS (ĐÃ THÊM LIMIT BẢO VỆ HIỆU NĂNG)
 // ==========================================
 import type { DailyLog } from './types';
 
-// Lấy danh sách báo cáo
 export const fetchDailyLogs = async (projectId: string): Promise<DailyLog[]> => {
   const supabase = getSupabase();
   if (!supabase) return [];
@@ -144,14 +155,14 @@ export const fetchDailyLogs = async (projectId: string): Promise<DailyLog[]> => 
     .from('daily_logs')
     .select('*')
     .eq('project_id', projectId)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .limit(365); // Tối đa lấy 365 ngày gần nhất để không treo máy
 
   if (error) {
     console.error("Lỗi lấy báo cáo:", error);
     return [];
   }
 
-  // Chuyển đổi format tên cột từ DB sang chuẩn Frontend
   return data.map(d => ({
     id: d.id,
     projectId: d.project_id,
@@ -171,7 +182,6 @@ export const fetchDailyLogs = async (projectId: string): Promise<DailyLog[]> => 
   }));
 };
 
-// Thêm 1 báo cáo mới
 export const insertDailyLog = async (log: Omit<DailyLog, 'id'>): Promise<DailyLog | null> => {
   const supabase = getSupabase();
   if (!supabase) return null;
@@ -202,25 +212,13 @@ export const insertDailyLog = async (log: Omit<DailyLog, 'id'>): Promise<DailyLo
   }
   
   return {
-    id: data.id,
-    projectId: data.project_id,
-    day: data.day,
-    month: data.month,
-    year: data.year,
-    adName: data.ad_name,
-    adLink: data.ad_link,
-    spend: Number(data.spend),
-    impressions: Number(data.impressions),
-    clicks: Number(data.clicks),
-    messages: Number(data.messages),
-    orders: Number(data.orders),
-    revenue: Number(data.revenue),
-    issues: data.issues,
-    optimizations: data.optimizations
+    id: data.id, projectId: data.project_id, day: data.day, month: data.month, year: data.year,
+    adName: data.ad_name, adLink: data.ad_link, spend: Number(data.spend), impressions: Number(data.impressions),
+    clicks: Number(data.clicks), messages: Number(data.messages), orders: Number(data.orders),
+    revenue: Number(data.revenue), issues: data.issues, optimizations: data.optimizations
   };
 };
 
-// Cập nhật 1 báo cáo
 export const updateDailyLog = async (id: string, log: Partial<DailyLog>): Promise<boolean> => {
   const supabase = getSupabase();
   if (!supabase) return false;
@@ -237,40 +235,26 @@ export const updateDailyLog = async (id: string, log: Partial<DailyLog>): Promis
   if (log.issues !== undefined) updates.issues = log.issues;
   if (log.optimizations !== undefined) updates.optimizations = log.optimizations;
 
-  const { error } = await supabase
-    .from('daily_logs')
-    .update(updates)
-    .eq('id', id);
-
-  if (error) {
-    toast.error(`Lỗi cập nhật báo cáo: ${error.message}`);
-    return false;
-  }
+  const { error } = await supabase.from('daily_logs').update(updates).eq('id', id);
+  if (error) { toast.error(`Lỗi cập nhật báo cáo: ${error.message}`); return false; }
   return true;
 };
 
-// Xóa 1 báo cáo
 export const deleteDailyLog = async (id: string): Promise<boolean> => {
   const supabase = getSupabase();
   if (!supabase) return false;
-  const { error } = await supabase
-    .from('daily_logs')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
-    toast.error(`Lỗi xóa báo cáo: ${error.message}`);
-    return false;
-  }
+  const { error } = await supabase.from('daily_logs').delete().eq('id', id);
+  if (error) { toast.error(`Lỗi xóa báo cáo: ${error.message}`); return false; }
   return true;
 };
+
 // ==========================================
-// 5. API CHO BẢNG ORDERS (QUẢN LÝ ĐƠN HÀNG)
+// 5. API CHO BẢNG ORDERS (ĐÃ THÊM LIMIT BẢO VỆ HIỆU NĂNG)
 // ==========================================
 export interface Order {
   id: string;
   projectId: string;
-  sheetName: string; // <-- Đã thêm
+  sheetName: string;
   orderDate: string;
   source: string;
   customerInfo: string;
@@ -293,20 +277,17 @@ export const fetchOrders = async (projectId: string): Promise<Order[]> => {
     .from('orders')
     .select('*')
     .eq('project_id', projectId)
-    .order('order_date', { ascending: false });
+    .order('order_date', { ascending: false })
+    .limit(500); // Tối đa lấy 500 đơn hàng mới nhất
 
   if (error) return [];
 
   return data.map(d => ({
-    id: d.id, projectId: d.project_id,
-    sheetName: d.sheet_name || 'Bảng chung', // <-- Đã thêm
-    orderDate: d.order_date || '', source: d.source || '',
-    customerInfo: d.customer_info || '', address: d.address || '',
-    productName: d.product_name || '', quantity: Number(d.quantity),
-    price: Number(d.price), total: Number(d.total),
-    notes: d.notes || '', shippingDate: d.shipping_date || '',
-    trackingCode: d.tracking_code || '', status: d.status || '',
-    shippingFee: Number(d.shipping_fee)
+    id: d.id, projectId: d.project_id, sheetName: d.sheet_name || 'Bảng chung',
+    orderDate: d.order_date || '', source: d.source || '', customerInfo: d.customer_info || '',
+    address: d.address || '', productName: d.product_name || '', quantity: Number(d.quantity),
+    price: Number(d.price), total: Number(d.total), notes: d.notes || '', shippingDate: d.shipping_date || '',
+    trackingCode: d.tracking_code || '', status: d.status || '', shippingFee: Number(d.shipping_fee)
   }));
 };
 
@@ -314,26 +295,19 @@ export const insertOrder = async (order: Omit<Order, 'id'>): Promise<Order | nul
   const supabase = getSupabase();
   if (!supabase) return null;
   const { data, error } = await supabase.from('orders').insert([{
-    project_id: order.projectId, 
-    sheet_name: order.sheetName || 'Bảng chung', // <-- Đã thêm
-    order_date: order.orderDate || null,
-    source: order.source, customer_info: order.customerInfo,
-    address: order.address, product_name: order.productName,
-    quantity: order.quantity, price: order.price, total: order.total,
-    notes: order.notes, shipping_date: order.shippingDate || null,
+    project_id: order.projectId, sheet_name: order.sheetName || 'Bảng chung', order_date: order.orderDate || null,
+    source: order.source, customer_info: order.customerInfo, address: order.address, product_name: order.productName,
+    quantity: order.quantity, price: order.price, total: order.total, notes: order.notes, shipping_date: order.shippingDate || null,
     tracking_code: order.trackingCode, status: order.status, shipping_fee: order.shippingFee
   }]).select().single();
 
   if (error) { toast.error(`Lỗi thêm đơn: ${error.message}`); return null; }
   
   return {
-    id: data.id, projectId: data.project_id, 
-    sheetName: data.sheet_name || 'Bảng chung', // <-- Đã thêm
-    orderDate: data.order_date || '',
-    source: data.source || '', customerInfo: data.customer_info || '', address: data.address || '',
-    productName: data.product_name || '', quantity: Number(data.quantity), price: Number(data.price),
-    total: Number(data.total), notes: data.notes || '', shippingDate: data.shipping_date || '',
-    trackingCode: data.tracking_code || '', status: data.status || '', shippingFee: Number(data.shipping_fee)
+    id: data.id, projectId: data.project_id, sheetName: data.sheet_name || 'Bảng chung', orderDate: data.order_date || '',
+    source: data.source || '', customerInfo: data.customer_info || '', address: data.address || '', productName: data.product_name || '',
+    quantity: Number(data.quantity), price: Number(data.price), total: Number(data.total), notes: data.notes || '',
+    shippingDate: data.shipping_date || '', trackingCode: data.tracking_code || '', status: data.status || '', shippingFee: Number(data.shipping_fee)
   };
 };
 
@@ -353,22 +327,16 @@ export const updateOrder = async (id: string, order: Partial<Order>): Promise<bo
   if (order.total !== undefined) updates.total = order.total;
   if (order.notes !== undefined) updates.notes = order.notes;
   if (order.shippingDate !== undefined) updates.shipping_date = order.shippingDate || null;
-  
-  // ĐÃ SỬA LỖI CHÍNH TẢ Ở DÒNG NÀY (Chuyển trackingCode thành tracking_code)
   if (order.trackingCode !== undefined) updates.tracking_code = order.trackingCode; 
-  
   if (order.status !== undefined) updates.status = order.status;
   if (order.shippingFee !== undefined) updates.shipping_fee = order.shippingFee;
 
   const { error } = await supabase.from('orders').update(updates).eq('id', id);
-  
-  // Thêm cảnh báo nếu Database báo lỗi để dễ dàng gỡ rối
   if (error) {
     console.error("Lỗi khi lưu đơn hàng:", error);
     toast.error(`Không thể lưu thay đổi: ${error.message}`);
     return false;
   }
-  
   return true;
 };
 
@@ -379,23 +347,12 @@ export const deleteOrder = async (id: string): Promise<boolean> => {
   return !error;
 };
 
-// Xóa toàn bộ Bảng (Sheet) cùng các đơn hàng bên trong
 export const deleteOrdersBySheet = async (projectId: string, sheetName: string): Promise<boolean> => {
   const supabase = getSupabase();
   if (!supabase) return false;
-  
   let query = supabase.from('orders').delete().eq('project_id', projectId);
-  
-  // Nếu lệnh truyền vào không phải là ALL_SHEETS, thì chỉ xóa bảng được chỉ định
-  if (sheetName !== 'ALL_SHEETS') {
-    query = query.eq('sheet_name', sheetName);
-  }
-
+  if (sheetName !== 'ALL_SHEETS') { query = query.eq('sheet_name', sheetName); }
   const { error } = await query;
-
-  if (error) {
-    toast.error(`Lỗi xóa bảng: ${error.message}`);
-    return false;
-  }
+  if (error) { toast.error(`Lỗi xóa bảng: ${error.message}`); return false; }
   return true;
 };
