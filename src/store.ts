@@ -94,50 +94,56 @@ export const saveProjectData = async <T>(pid: string, key: string, items: T[]) =
 };
 
 // ==========================================
-// 3. REACT HOOK: DÙNG CHO MỌI TRANG CON (ĐÃ CHỐNG SPAM API)
+// 3. REACT HOOK: DÙNG CHO MỌI TRANG CON (CÓ REALTIME ĐỒNG BỘ NHÓM)
 // ==========================================
 export function useSyncData<T>(projectId: string, dataKey: string, initialValue: T[] = []) {
   const [data, setData] = useState<T[]>(initialValue);
   const [loading, setLoading] = useState(true);
-  
-  // Dùng useRef để giữ bộ đếm thời gian chống spam API
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let isMounted = true;
+    const supabase = getSupabase();
     setLoading(true);
+
+    // 1. Lấy dữ liệu lần đầu
     fetchProjectData<T>(projectId, dataKey).then(res => {
       if (isMounted) {
-        const safeData = Array.isArray(res) ? res : initialValue;
-        setData(safeData);
-        setLoading(false);
-      }
-    }).catch(() => {
-      if (isMounted) {
-        setData(initialValue);
+        setData(Array.isArray(res) ? res : initialValue);
         setLoading(false);
       }
     });
-    return () => { isMounted = false; };
+
+    // 2. Bật kênh lắng nghe Realtime (Ai sửa máy kia sẽ tự update)
+    if (!supabase) return;
+    const channel = supabase.channel(`sync_${projectId}_${dataKey}`)
+      .on('postgres_changes', { 
+        event: 'UPDATE', 
+        schema: 'public', 
+        table: 'project_data', 
+        filter: `project_id=eq.${projectId}` 
+      }, (payload) => {
+        if (payload.new.data_key === dataKey && isMounted) {
+          setData(payload.new.data_value as T[]);
+        }
+      }).subscribe();
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(channel);
+    };
   }, [projectId, dataKey]);
 
-  // Dùng useCallback để tối ưu re-render và gom các lần gõ phím
   const syncData = useCallback((newData: T[]) => {
     const safeData = Array.isArray(newData) ? newData : [];
-    
-    // Cập nhật giao diện mượt mà ngay lập tức
-    setData(safeData); 
+    setData(safeData); // Cập nhật local lập tức
 
-    // Nếu người dùng đang gõ, hủy lệnh lưu cũ
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
 
-    // Đợi 1 giây (1000ms) sau khi ngừng gõ mới gọi API lưu lên Cloud
+    // Lưu sau 1 giây ngừng gõ để báo cho các máy khác
     timeoutRef.current = setTimeout(async () => {
       await saveProjectData(projectId, dataKey, safeData);
     }, 1000);
-    
   }, [projectId, dataKey]);
 
   return { data, syncData, loading };
