@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import type { Project, DailyLog, ActionPhase } from '../types';
-import { useSyncData, fetchDailyLogs } from '../store';
+// Thêm fetchOrders và type Order từ store
+import { useSyncData, fetchDailyLogs, fetchOrders, type Order } from '../store';
 import { calculateCTR, calculateCPA, calculateCPO, calculateCR } from '../utils/metrics';
 import { 
   TrendingUp, BarChart3, MessageSquare, ShoppingCart, CheckCircle, 
@@ -14,18 +15,26 @@ interface Props {
 
 export function Dashboard({ project }: Props) {
   const [logs, setLogs] = useState<DailyLog[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]); // State lưu trữ đơn hàng
   const [logsLoading, setLogsLoading] = useState(true);
   const { data: actionPlan, loading: planLoading } = useSyncData<ActionPhase>(project.id, 'actionPhases', []);
 
   useEffect(() => {
     let mounted = true;
     setLogsLoading(true);
-    fetchDailyLogs(project.id).then(data => {
+    
+    // Tải song song cả Báo cáo (Logs) và Đơn hàng (Orders)
+    Promise.all([
+      fetchDailyLogs(project.id),
+      fetchOrders(project.id, 1, 5000) // Lấy tối đa 5000 đơn để thống kê
+    ]).then(([logsData, ordersData]) => {
       if (mounted) {
-        setLogs(data);
+        setLogs(logsData);
+        setOrders(ordersData);
         setLogsLoading(false);
       }
     });
+
     return () => { mounted = false; };
   }, [project.id]);
 
@@ -39,7 +48,7 @@ export function Dashboard({ project }: Props) {
     return new Date().toISOString().split('T')[0];
   });
 
-  // KPI Targets - Đã thay đổi: Lưu trực tiếp lên Cloud (Supabase) bằng JSONB
+  // KPI Targets
   const { data: kpiData, syncData: saveKpiData } = useSyncData<any>(project.id, 'kpi_targets', [{ spend: 0, orders: 0, messages: 0, revenue: 0 }]);
   const kpiTargets = kpiData[0] || { spend: 0, orders: 0, messages: 0, revenue: 0 };
   
@@ -73,13 +82,11 @@ export function Dashboard({ project }: Props) {
     );
   };
 
-  // ĐÃ SỬA: Tách chuỗi tĩnh YYYY-MM-DD để tạo Local Time, tránh lỗi lùi ngày do múi giờ UTC+7
+  // 1. LỌC BÁO CÁO QUẢNG CÁO
   const filteredLogs = useMemo(() => {
     if (!startDate || !endDate) return logs;
-    
     const [sYear, sMonth, sDay] = startDate.split('-').map(Number);
     const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0);
-    
     const [eYear, eMonth, eDay] = endDate.split('-').map(Number);
     const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
 
@@ -88,6 +95,50 @@ export function Dashboard({ project }: Props) {
       return logDate >= start && logDate <= end;
     });
   }, [logs, startDate, endDate]);
+
+  // 2. LỌC VÀ TÍNH TOÁN DOANH SỐ TỪ BẢNG ĐƠN HÀNG
+  const orderMetrics = useMemo(() => {
+    let chot = 0;
+    let thanhCong = 0;
+    let hoanHuy = 0;
+    let countChot = 0;
+    let countThanhCong = 0;
+    let countHoanHuy = 0;
+
+    if (!startDate || !endDate) return { chot, thanhCong, hoanHuy, countChot, countThanhCong, countHoanHuy };
+
+    const [sYear, sMonth, sDay] = startDate.split('-').map(Number);
+    const start = new Date(sYear, sMonth - 1, sDay, 0, 0, 0);
+    const [eYear, eMonth, eDay] = endDate.split('-').map(Number);
+    const end = new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999);
+
+    orders.forEach(order => {
+      if (!order.orderDate) return;
+      const [oYear, oMonth, oDay] = order.orderDate.split('-').map(Number);
+      const oDate = new Date(oYear, oMonth - 1, oDay, 12, 0, 0); // Lấy giữa trưa để tránh lệch múi giờ
+      
+      // Nếu đơn hàng nằm trong khoảng ngày được chọn
+      if (oDate >= start && oDate <= end) {
+        const val = Number(order.total) || 0;
+        const status = (order.status || '').toLowerCase().trim();
+
+        // Mặc định tất cả đơn tạo ra đều tính là "Doanh số chốt"
+        chot += val;
+        countChot += 1;
+
+        // Phân loại dựa trên từ khóa trạng thái
+        if (status.includes('hủy') || status.includes('hoàn') || status.includes('boom') || status.includes('cancel')) {
+          hoanHuy += val;
+          countHoanHuy += 1;
+        } else if (status.includes('thành công') || status.includes('đã giao') || status.includes('hoàn thành') || status.includes('success') || status.includes('đã nhận')) {
+          thanhCong += val;
+          countThanhCong += 1;
+        }
+      }
+    });
+
+    return { chot, thanhCong, hoanHuy, countChot, countThanhCong, countHoanHuy };
+  }, [orders, startDate, endDate]);
 
   if (logsLoading || planLoading) {
     return (
@@ -98,6 +149,7 @@ export function Dashboard({ project }: Props) {
     );
   }
 
+  // Action Plan Stats
   const allTasks = actionPlan.flatMap(phase => phase.subPhases.flatMap(sp => sp.tasks));
   const totalTasks = allTasks.length;
   const doneTasks = allTasks.filter(t => t.status === 'completed').length;
@@ -105,6 +157,7 @@ export function Dashboard({ project }: Props) {
   const pendingTasks = allTasks.filter(t => t.status === 'pending').length;
   const progress = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
 
+  // QC Stats
   const totalSpend = filteredLogs.reduce((s, l) => s + (l.spend || 0), 0);
   const totalImpressions = filteredLogs.reduce((s, l) => s + (l.impressions || 0), 0);
   const totalClicks = filteredLogs.reduce((s, l) => s + (l.clicks || 0), 0);
@@ -124,6 +177,7 @@ export function Dashboard({ project }: Props) {
 
   return (
     <div className="space-y-6">
+      {/* Header Dự án */}
       <div className="bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 rounded-2xl p-8 text-white shadow-xl">
         <div className="flex items-start justify-between">
           <div className="flex-1">
@@ -160,18 +214,19 @@ export function Dashboard({ project }: Props) {
             <div className="flex items-center gap-3">
               <BarChart3 className="w-8 h-8 text-yellow-300" />
               <div>
-                <p className="text-blue-200 text-sm">Tổng Số Báo Cáo</p>
-                <p className="text-xl font-bold">{logs.length} ngày</p>
+                <p className="text-blue-200 text-sm">Tổng Số Đơn Hàng</p>
+                <p className="text-xl font-bold">{orders.length} đơn</p>
               </div>
             </div>
           </div>
         </div>
       </div>
 
+      {/* Bộ Lọc Ngày */}
       <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-200 flex flex-col sm:flex-row items-start sm:items-center gap-4">
         <div className="flex items-center gap-2 text-indigo-600 font-semibold">
           <Filter className="w-5 h-5" />
-          <span>Lọc chỉ số quảng cáo theo khoảng thời gian:</span>
+          <span>Lọc dữ liệu theo thời gian:</span>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2">
@@ -192,16 +247,55 @@ export function Dashboard({ project }: Props) {
               className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
             />
           </div>
-          <div className="ml-auto text-sm text-gray-500">
-            Tìm thấy <strong className="text-indigo-600">{filteredLogs.length}</strong> báo cáo
+        </div>
+      </div>
+
+      {/* TÍNH NĂNG MỚI: PHÂN TÍCH DOANH THU TỪ BẢNG ĐƠN HÀNG (CRM) */}
+      <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-gray-700 flex items-center gap-2">
+            <ShoppingCart className="w-5 h-5 text-indigo-500" />
+            Thống Kê Doanh Số (Dữ liệu từ Bảng Quản Lý Đơn Hàng)
+          </h3>
+          <span className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full font-medium border border-indigo-100">
+            {orderMetrics.countChot} đơn trong kỳ
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="p-5 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 rounded-xl relative overflow-hidden">
+            <div className="relative z-10">
+              <p className="text-sm font-semibold text-blue-700">Tổng Doanh Số Chốt</p>
+              <p className="text-3xl font-extrabold text-blue-900 mt-2">{orderMetrics.chot.toLocaleString('vi-VN')}đ</p>
+              <p className="text-xs text-blue-600/70 mt-2 font-medium">Tổng giá trị {orderMetrics.countChot} đơn hàng đã lên</p>
+            </div>
+            <ShoppingCart className="absolute right-[-10px] bottom-[-10px] w-24 h-24 text-blue-500 opacity-5" />
+          </div>
+
+          <div className="p-5 bg-gradient-to-br from-emerald-50 to-green-50 border border-emerald-100 rounded-xl relative overflow-hidden">
+            <div className="relative z-10">
+              <p className="text-sm font-semibold text-emerald-700">Doanh Số Thành Công</p>
+              <p className="text-3xl font-extrabold text-emerald-900 mt-2">{orderMetrics.thanhCong.toLocaleString('vi-VN')}đ</p>
+              <p className="text-xs text-emerald-600/70 mt-2 font-medium">Ghi nhận từ {orderMetrics.countThanhCong} đơn giao thành công</p>
+            </div>
+            <CheckCircle className="absolute right-[-10px] bottom-[-10px] w-24 h-24 text-emerald-500 opacity-5" />
+          </div>
+
+          <div className="p-5 bg-gradient-to-br from-red-50 to-rose-50 border border-red-100 rounded-xl relative overflow-hidden">
+            <div className="relative z-10">
+              <p className="text-sm font-semibold text-red-700">Doanh Số Hoàn / Hủy / Boom</p>
+              <p className="text-3xl font-extrabold text-red-900 mt-2">{orderMetrics.hoanHuy.toLocaleString('vi-VN')}đ</p>
+              <p className="text-xs text-red-600/70 mt-2 font-medium">Từ {orderMetrics.countHoanHuy} đơn hàng gặp sự cố</p>
+            </div>
+            <AlertTriangle className="absolute right-[-10px] bottom-[-10px] w-24 h-24 text-red-500 opacity-5" />
           </div>
         </div>
       </div>
 
+      {/* KPI Mục Tiêu Theo Quảng Cáo */}
       <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-200">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold text-gray-700 flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-indigo-500" /> Mục Tiêu KPI Tháng
+            <TrendingUp className="w-5 h-5 text-indigo-500" /> Mục Tiêu KPI & Quảng Cáo (Dữ liệu từ Báo cáo ngày)
           </h3>
           <button onClick={() => { setTargetDraft({ ...kpiTargets }); setShowTargetEdit(!showTargetEdit); }}
             className="text-sm px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100">
@@ -232,17 +326,17 @@ export function Dashboard({ project }: Props) {
             {progressBar(totalSpend, kpiTargets.spend || 0)}
           </div>
           <div className="bg-green-50 rounded-xl p-4">
-            <p className="text-sm font-medium text-green-700">Đơn hàng</p>
+            <p className="text-sm font-medium text-green-700">Đơn hàng (Báo cáo)</p>
             <p className="text-xl font-bold text-green-900 mt-1">{totalOrders}</p>
             {progressBar(totalOrders, kpiTargets.orders || 0)}
           </div>
           <div className="bg-purple-50 rounded-xl p-4">
-            <p className="text-sm font-medium text-purple-700">Tin nhắn</p>
+            <p className="text-sm font-medium text-purple-700">Tin nhắn (Báo cáo)</p>
             <p className="text-xl font-bold text-purple-900 mt-1">{totalMessages}</p>
             {progressBar(totalMessages, kpiTargets.messages || 0)}
           </div>
           <div className="bg-emerald-50 rounded-xl p-4">
-            <p className="text-sm font-medium text-emerald-700">Doanh thu</p>
+            <p className="text-sm font-medium text-emerald-700">Doanh thu tạm tính (Báo cáo)</p>
             <p className="text-xl font-bold text-emerald-900 mt-1">{totalRevenue.toLocaleString('vi-VN')}đ</p>
             {progressBar(totalRevenue, kpiTargets.revenue || 0)}
           </div>
@@ -253,31 +347,18 @@ export function Dashboard({ project }: Props) {
         <div className="bg-gradient-to-br from-emerald-500 to-green-600 rounded-2xl p-6 text-white shadow-lg">
           <div className="flex items-center justify-between mb-2">
             <Receipt className="w-8 h-8 text-emerald-200" />
-            <span className="text-xs font-semibold bg-white/20 px-3 py-1 rounded-full">DOANH SỐ</span>
+            <span className="text-xs font-semibold bg-white/20 px-3 py-1 rounded-full">ROAS</span>
           </div>
-          <p className="text-3xl font-extrabold mt-2">{totalRevenue.toLocaleString('vi-VN')}đ</p>
-          <p className="text-emerald-100 text-sm mt-1">Doanh thu tạm tính</p>
-          {roas > 0 && (
-            <div className="mt-3 pt-3 border-t border-white/20 text-sm">
-              <span className="text-emerald-200">ROAS: </span>
-              <span className="font-bold text-lg">{roas.toFixed(2)}x</span>
-            </div>
-          )}
+          <p className="text-3xl font-extrabold mt-2">{roas > 0 ? roas.toFixed(2) : 0}x</p>
+          <p className="text-emerald-100 text-sm mt-1">Lợi tức quảng cáo</p>
         </div>
         <div className="bg-gradient-to-br from-blue-500 to-blue-700 rounded-2xl p-6 text-white shadow-lg">
           <div className="flex items-center justify-between mb-2">
             <DollarSign className="w-8 h-8 text-blue-200" />
-            <span className="text-xs font-semibold bg-white/20 px-3 py-1 rounded-full">CHI PHÍ QC</span>
+            <span className="text-xs font-semibold bg-white/20 px-3 py-1 rounded-full">CPA</span>
           </div>
-          <p className="text-3xl font-extrabold mt-2">{totalSpend.toLocaleString('vi-VN')}đ</p>
-          <p className="text-blue-100 text-sm mt-1">Tổng chi phí quảng cáo</p>
-          {totalMessages > 0 && (
-            <div className="mt-3 pt-3 border-t border-white/20 text-sm">
-              <span className="text-blue-200">CPA: </span>
-              <span className="font-bold text-lg">{Math.round(avgCPA).toLocaleString('vi-VN')}đ</span>
-              <span className="text-blue-200 ml-1">/tin nhắn</span>
-            </div>
-          )}
+          <p className="text-3xl font-extrabold mt-2">{Math.round(avgCPA).toLocaleString('vi-VN')}đ</p>
+          <p className="text-blue-100 text-sm mt-1">Chi phí trên 1 tin nhắn</p>
         </div>
         <div className="bg-gradient-to-br from-amber-500 to-orange-600 rounded-2xl p-6 text-white shadow-lg">
           <div className="flex items-center justify-between mb-2">
@@ -286,11 +367,6 @@ export function Dashboard({ project }: Props) {
           </div>
           <p className="text-3xl font-extrabold mt-2">{Math.round(avgCPO).toLocaleString('vi-VN')}đ</p>
           <p className="text-amber-100 text-sm mt-1">Chi phí trên 1 đơn</p>
-          <div className="mt-3 pt-3 border-t border-white/20 text-sm">
-            <span className="text-amber-200">Tổng đơn: </span>
-            <span className="font-bold text-lg">{totalOrders}</span>
-            <span className="text-amber-200 ml-1">đơn hàng</span>
-          </div>
         </div>
       </div>
 
@@ -427,16 +503,14 @@ export function Dashboard({ project }: Props) {
         </div>
       )}
 
-      {totalTasks === 0 && logs.length === 0 && (
+      {totalTasks === 0 && logs.length === 0 && orders.length === 0 && (
         <div className="bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl p-12 text-center">
           <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <Rocket className="w-10 h-10 text-blue-500" />
           </div>
           <h3 className="text-xl font-bold text-gray-700 mb-2">Dự án mới được tạo!</h3>
           <p className="text-gray-500 max-w-md mx-auto">
-            Bắt đầu bằng việc thêm công việc trong <strong>Action Plan</strong>, 
-            cập nhật thông tin trong <strong>Chiến Lược</strong>, 
-            và ghi nhận hoạt động hàng ngày trong <strong>Báo Cáo</strong>.
+            Bắt đầu bằng việc thêm công việc, cập nhật Báo cáo quảng cáo và Đơn hàng để xem các chỉ số thống kê.
           </p>
         </div>
       )}
