@@ -3,30 +3,16 @@ import type { Project, DailyLog, ActionPhase } from '../types';
 import { useSyncData, fetchDailyLogs } from '../store';
 import { calculateCTR, calculateCPA, calculateCPO, calculateCR } from '../utils/metrics';
 import { 
-  TrendingUp, 
-  BarChart3, 
-  MessageSquare, 
-  ShoppingCart, 
-  CheckCircle, 
-  Clock, 
-  AlertTriangle,
-  Rocket,
-  Calendar,
-  Eye,
-  MousePointer,
-  Receipt,
-  DollarSign,
-  Loader2,
-  Filter
+  TrendingUp, BarChart3, MessageSquare, ShoppingCart, CheckCircle, 
+  Clock, AlertTriangle, Rocket, Calendar, Eye, MousePointer, 
+  Receipt, DollarSign, Loader2, Filter
 } from 'lucide-react';
 
 interface Props {
   project: Project;
 }
 
-
 export function Dashboard({ project }: Props) {
-  // FIX: Dùng fetchDailyLogs (bảng daily_logs) thay vì useSyncData sai bảng
   const [logs, setLogs] = useState<DailyLog[]>([]);
   const [logsLoading, setLogsLoading] = useState(true);
   const { data: actionPlan, loading: planLoading } = useSyncData<ActionPhase>(project.id, 'actionPhases', []);
@@ -43,7 +29,6 @@ export function Dashboard({ project }: Props) {
     return () => { mounted = false; };
   }, [project.id]);
 
-  // State cho bộ lọc thời gian (Mặc định: Từ đầu tháng đến hiện tại)
   const [startDate, setStartDate] = useState<string>(() => {
     const d = new Date();
     d.setDate(1);
@@ -54,17 +39,19 @@ export function Dashboard({ project }: Props) {
     return new Date().toISOString().split('T')[0];
   });
 
-  // F5: KPI Targets — persisted per project in localStorage
-  const storageKey = `kpiTargets_${project.id}`;
-  const [kpiTargets, setKpiTargets] = useState<{ spend: number; orders: number; messages: number; revenue: number }>(() => {
-    try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { return {}; }
-  });
+  // KPI Targets - Đã thay đổi: Lưu trực tiếp lên Cloud (Supabase) bằng JSONB
+  const { data: kpiData, syncData: saveKpiData } = useSyncData<any>(project.id, 'kpi_targets', [{ spend: 0, orders: 0, messages: 0, revenue: 0 }]);
+  const kpiTargets = kpiData[0] || { spend: 0, orders: 0, messages: 0, revenue: 0 };
+  
   const [showTargetEdit, setShowTargetEdit] = useState(false);
   const [targetDraft, setTargetDraft] = useState({ ...kpiTargets });
 
+  useEffect(() => {
+    setTargetDraft({ ...kpiTargets });
+  }, [kpiTargets.spend, kpiTargets.orders, kpiTargets.messages, kpiTargets.revenue]);
+
   const saveTargets = () => {
-    localStorage.setItem(storageKey, JSON.stringify(targetDraft));
-    setKpiTargets(targetDraft);
+    saveKpiData([targetDraft]);
     setShowTargetEdit(false);
   };
 
@@ -86,16 +73,12 @@ export function Dashboard({ project }: Props) {
     );
   };
 
-  // Lọc logs dựa trên khoảng thời gian
   const filteredLogs = useMemo(() => {
     if (!startDate || !endDate) return logs;
-    
     const start = new Date(startDate);
     start.setHours(0, 0, 0, 0);
-    
     const end = new Date(endDate);
     end.setHours(23, 59, 59, 999);
-
     return logs.filter(log => {
       const logDate = new Date(log.year, log.month - 1, log.day);
       return logDate >= start && logDate <= end;
@@ -111,7 +94,6 @@ export function Dashboard({ project }: Props) {
     );
   }
 
-  // Task Stats (Giữ nguyên toàn bộ project)
   const allTasks = actionPlan.flatMap(phase => phase.subPhases.flatMap(sp => sp.tasks));
   const totalTasks = allTasks.length;
   const doneTasks = allTasks.filter(t => t.status === 'completed').length;
@@ -119,7 +101,6 @@ export function Dashboard({ project }: Props) {
   const pendingTasks = allTasks.filter(t => t.status === 'pending').length;
   const progress = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
 
-  // KPI Stats (Tính trên filteredLogs)
   const totalSpend = filteredLogs.reduce((s, l) => s + (l.spend || 0), 0);
   const totalImpressions = filteredLogs.reduce((s, l) => s + (l.impressions || 0), 0);
   const totalClicks = filteredLogs.reduce((s, l) => s + (l.clicks || 0), 0);
@@ -139,7 +120,6 @@ export function Dashboard({ project }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* Project Header */}
       <div className="bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 rounded-2xl p-8 text-white shadow-xl">
         <div className="flex items-start justify-between">
           <div className="flex-1">
@@ -184,7 +164,6 @@ export function Dashboard({ project }: Props) {
         </div>
       </div>
 
-      {/* BỘ LỌC THỜI GIAN */}
       <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-200 flex flex-col sm:flex-row items-start sm:items-center gap-4">
         <div className="flex items-center gap-2 text-indigo-600 font-semibold">
           <Filter className="w-5 h-5" />
@@ -215,7 +194,6 @@ export function Dashboard({ project }: Props) {
         </div>
       </div>
 
-      {/* F5: KPI Targets */}
       <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-200">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold text-gray-700 flex items-center gap-2">
@@ -267,7 +245,6 @@ export function Dashboard({ project }: Props) {
         </div>
       </div>
 
-      {/* TOP 3 KPI CARDS */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-gradient-to-br from-emerald-500 to-green-600 rounded-2xl p-6 text-white shadow-lg">
           <div className="flex items-center justify-between mb-2">
@@ -313,7 +290,6 @@ export function Dashboard({ project }: Props) {
         </div>
       </div>
 
-      {/* Stats Cards - Row 2 */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
           <div className="flex items-center justify-between mb-3">
@@ -357,7 +333,6 @@ export function Dashboard({ project }: Props) {
         </div>
       </div>
 
-      {/* Task Summary */}
       <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
         <h3 className="font-semibold text-gray-700 mb-4 flex items-center gap-2">
           <CheckCircle className="w-5 h-5 text-indigo-500" />
@@ -387,7 +362,6 @@ export function Dashboard({ project }: Props) {
         <p className="text-sm text-gray-500 mt-2 text-right">{progress}% hoàn thành</p>
       </div>
 
-      {/* Phase Progress */}
       {actionPlan.length > 0 && (
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
           <h3 className="font-semibold text-gray-700 mb-4">Tiến Độ Theo Giai Đoạn</h3>
@@ -422,7 +396,6 @@ export function Dashboard({ project }: Props) {
         </div>
       )}
 
-      {/* Recent Issues */}
       {filteredLogs.filter(l => l.issues).length > 0 && (
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
           <h3 className="font-semibold text-gray-700 mb-4 flex items-center gap-2">
@@ -450,7 +423,6 @@ export function Dashboard({ project }: Props) {
         </div>
       )}
 
-      {/* Empty State */}
       {totalTasks === 0 && logs.length === 0 && (
         <div className="bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl p-12 text-center">
           <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
