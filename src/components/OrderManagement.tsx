@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   ShoppingBag, Download, Upload, Loader2, Plus, Edit2, Trash2, X, 
-  Save, Search, Filter, RefreshCcw, Check, LayoutPanelLeft
+  Save, Search, Filter, RefreshCcw, Check, LayoutPanelLeft,
+  AlertTriangle, CheckCircle, DollarSign
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Order, fetchOrders, insertOrder, updateOrder, deleteOrder, deleteOrdersBySheet } from '../store';
@@ -37,12 +38,9 @@ export function OrderManagement({ projectId }: Props) {
   const allSheetsFromData = Array.from(new Set(orders.map(o => o.sheetName || 'Bảng chung').filter(s => s !== 'Bảng chung')));
   const combinedSheets = Array.from(new Set([...allSheetsFromData, ...localNewSheets]));
   
-  // Xóa bỏ "Team 1" mặc định. Admin luôn có Bảng chung. User thường chỉ thấy bảng nếu đã tạo.
   const allTabs = isAdmin ? ['Bảng chung', ...combinedSheets] : combinedSheets;
-
   const [activeSheet, setActiveSheet] = useState<string>(allTabs[0] || '');
 
-  // Tự động chuyển tab nếu tab hiện tại bị xóa hoặc không hợp lệ
   useEffect(() => {
     if (allTabs.length > 0 && !allTabs.includes(activeSheet)) {
       setActiveSheet(allTabs[0]);
@@ -85,14 +83,14 @@ export function OrderManagement({ projectId }: Props) {
   const [focusedField, setFocusedField] = useState<keyof Order | null>(null); 
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   
-  // Quản lý Focus thông minh cho các ô Input
   const inputRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
 
   useEffect(() => { loadOrders(); }, [projectId]);
 
   const loadOrders = async () => {
     setLoading(true);
-    const data = await fetchOrders(projectId);
+    // Có thể truyền thêm page và pageSize nếu bạn đang dùng hàm phân trang
+    const data = await fetchOrders(projectId, 1, 5000); 
     setOrders(data);
     setLoading(false);
   };
@@ -115,6 +113,35 @@ export function OrderManagement({ projectId }: Props) {
     setFilters({ dateFrom: '', dateTo: '', source: '', customer: '', product: '', tracking: '', status: '' });
   };
 
+  // ================= THỐNG KÊ TRẠNG THÁI & DOANH SỐ =================
+  // Lấy dữ liệu thống kê từ chính danh sách ĐÃ ĐƯỢC LỌC (để hiển thị đúng số của bảng & ngày hiện tại)
+  const statTotal = filteredOrders.length;
+  const statUnprocessed = filteredOrders.filter(o => o.status === 'Chưa xử lý').length;
+  const statDelivering = filteredOrders.filter(o => o.status === 'Đang giao hàng').length;
+  const statSuccess = filteredOrders.filter(o => o.status === 'Phát thành công').length;
+  const statReturning = filteredOrders.filter(o => o.status === 'Đang hoàn').length;
+  const statCancelled = filteredOrders.filter(o => o.status === 'Hủy').length;
+  const returnRate = statTotal > 0 ? ((statReturning + statCancelled) / statTotal * 100).toFixed(1) : '0';
+
+  const revenueMetrics = useMemo(() => {
+    let chot = 0; let thanhCong = 0; let hoanHuy = 0;
+    filteredOrders.forEach(o => {
+      const val = Number(o.total) || 0;
+      const status = (o.status || '').toLowerCase().trim();
+      
+      chot += val; // Mặc định mọi đơn trong bộ lọc đều là đơn chốt
+
+      if (status.includes('hủy') || status.includes('hoàn') || status.includes('boom') || status.includes('cancel')) {
+        hoanHuy += val;
+      } else if (status.includes('thành công') || status.includes('đã giao') || status.includes('hoàn thành') || status.includes('success') || status.includes('đã nhận')) {
+        thanhCong += val;
+      }
+    });
+    return { chot, thanhCong, hoanHuy };
+  }, [filteredOrders]);
+
+  const formatMoney = (val: number) => new Intl.NumberFormat('vi-VN').format(val);
+
   // ================= TẠO BẢNG & XÓA BẢNG =================
   const handleAddNewSheet = () => {
     const sheetName = prompt('Nhập tên Bảng quản lý mới (VD: Đơn Tháng 3, Team A...):');
@@ -129,11 +156,10 @@ export function OrderManagement({ projectId }: Props) {
 
   const handleDeleteSheet = async () => {
     if (!isAdmin) return;
-
     const isAll = activeSheet === 'Bảng chung';
     const confirmDelete = window.confirm(
       isAll 
-      ? `⚠️ CẢNH BÁO NGUY HIỂM TỘT ĐỘ:\n\nBạn đang ở "Bảng chung". Việc xóa sẽ XÓA SẠCH TOÀN BỘ ${orders.length} ĐƠN HÀNG của TẤT CẢ CÁC BẢNG trong dự án này!\n\nHành động này KHÔNG THỂ HOÀN TÁC! Bạn có chắc chắn không?`
+      ? `⚠️ CẢNH BÁO NGUY HIỂM TỘT ĐỘ:\n\nBạn đang ở "Bảng chung". Việc xóa sẽ XÓA SẠCH TOÀN BỘ ĐƠN HÀNG của TẤT CẢ CÁC BẢNG trong dự án này!\n\nHành động này KHÔNG THỂ HOÀN TÁC! Bạn có chắc chắn không?`
       : `⚠️ CẢNH BÁO NGUY HIỂM:\n\nBạn có chắc chắn muốn xóa TOÀN BỘ đơn hàng trong bảng "${activeSheet}" không?\n\nHành động này KHÔNG THỂ HOÀN TÁC!`
     );
     
@@ -141,8 +167,7 @@ export function OrderManagement({ projectId }: Props) {
       const success = await deleteOrdersBySheet(projectId, isAll ? 'ALL_SHEETS' : activeSheet);
       if (success) {
         if (isAll) {
-          setOrders([]);
-          saveLocalSheets([]);
+          setOrders([]); saveLocalSheets([]);
         } else {
           setOrders(orders.filter(o => (o.sheetName || 'Bảng chung') !== activeSheet));
           saveLocalSheets(localNewSheets.filter(s => s !== activeSheet));
@@ -169,7 +194,6 @@ export function OrderManagement({ projectId }: Props) {
   const handleSaveAdd = async () => {
     if (!addFormData.customerInfo.trim() || !canEdit) return;
     setIsSavingAdd(true);
-    // Nếu chưa có bảng nào (bị rỗng), tự động lưu vào bảng "Mặc định"
     const finalSheetName = addFormData.sheetName || (isAdmin ? 'Bảng chung' : 'Bảng Mặc định');
     
     const newOrder = await insertOrder({ projectId, ...addFormData, sheetName: finalSheetName });
@@ -183,7 +207,7 @@ export function OrderManagement({ projectId }: Props) {
     setIsSavingAdd(false);
   };
 
-  // ================= XỬ LÝ SỬA TRỰC TIẾP VỚI AUTOFOCUS NHẠY BÉN =================
+  // ================= XỬ LÝ SỬA TRỰC TIẾP VỚI AUTOFOCUS =================
   useEffect(() => {
     if (editingRowId && editFormData.quantity !== undefined && editFormData.price !== undefined) {
       setEditFormData(prev => ({ ...prev, total: (prev.quantity || 0) * (prev.price || 0) }));
@@ -196,8 +220,6 @@ export function OrderManagement({ projectId }: Props) {
     setEditFormData({ ...order });
     setFocusedField(field);
     setSelectedRowId(order.id);
-
-    // Chờ React render các ô Input xong thì focus luôn vào ô được nhấp
     if (field) {
       setTimeout(() => {
         const el = inputRefs.current[field];
@@ -207,9 +229,7 @@ export function OrderManagement({ projectId }: Props) {
   };
 
   const cancelInlineEdit = () => {
-    setEditingRowId(null);
-    setEditFormData({});
-    setFocusedField(null);
+    setEditingRowId(null); setEditFormData({}); setFocusedField(null);
   };
 
   const saveInlineEdit = async () => {
@@ -218,8 +238,7 @@ export function OrderManagement({ projectId }: Props) {
     const success = await updateOrder(editingRowId, editFormData);
     if (success) {
       setOrders(orders.map(o => o.id === editingRowId ? { ...o, ...editFormData } : o));
-      setEditingRowId(null);
-      setFocusedField(null);
+      setEditingRowId(null); setFocusedField(null);
     }
     setIsSavingEdit(false);
   };
@@ -319,19 +338,6 @@ export function OrderManagement({ projectId }: Props) {
     reader.readAsBinaryString(file);
   };
 
-  // ============= THỐNG KÊ TRẠNG THÁI ĐƠN HÀNG =============
-  const statsOrders = activeSheet === 'Bảng chung' ? orders : orders.filter(o => (o.sheetName || 'Bảng chung') === activeSheet);
-  const statTotal = statsOrders.length;
-  const statUnprocessed = statsOrders.filter(o => o.status === 'Chưa xử lý').length;
-  const statDelivering = statsOrders.filter(o => o.status === 'Đang giao hàng').length;
-  const statSuccess = statsOrders.filter(o => o.status === 'Phát thành công').length;
-  const statReturning = statsOrders.filter(o => o.status === 'Đang hoàn').length;
-  const statCancelled = statsOrders.filter(o => o.status === 'Hủy').length;
-  const returnRate = statTotal > 0 ? ((statReturning + statCancelled) / statTotal * 100).toFixed(1) : '0';
-  const totalRevenue = statsOrders.filter(o => o.status === 'Phát thành công').reduce((s, o) => s + (o.total || 0), 0);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('vi-VN').format(val);
-
   if (loading) return <div className="py-24 flex justify-center"><Loader2 className="w-8 h-8 animate-spin text-indigo-600" /></div>;
 
   return (
@@ -362,6 +368,31 @@ export function OrderManagement({ projectId }: Props) {
         <div className={`rounded-xl border p-3 shadow-sm text-center ${parseFloat(returnRate) > 20 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200'}`}>
           <div className={`text-2xl font-bold ${parseFloat(returnRate) > 20 ? 'text-red-600' : 'text-gray-700'}`}>{returnRate}%</div>
           <div className="text-xs text-gray-500 mt-0.5">Tỷ lệ hoàn/hủy</div>
+        </div>
+      </div>
+
+      {/* === DOANH SỐ THEO BẢNG & BỘ LỌC === */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 flex-none">
+        <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-4 text-white shadow-sm flex justify-between items-center border border-blue-400">
+          <div>
+            <p className="text-blue-100 text-xs font-semibold mb-1 uppercase tracking-wider">Tổng Doanh Số Chốt</p>
+            <p className="text-2xl font-extrabold">{formatMoney(revenueMetrics.chot)}đ</p>
+          </div>
+          <DollarSign className="w-10 h-10 text-white opacity-40" />
+        </div>
+        <div className="bg-gradient-to-br from-emerald-500 to-green-600 rounded-xl p-4 text-white shadow-sm flex justify-between items-center border border-green-400">
+          <div>
+            <p className="text-emerald-100 text-xs font-semibold mb-1 uppercase tracking-wider">Doanh Số Thành Công</p>
+            <p className="text-2xl font-extrabold">{formatMoney(revenueMetrics.thanhCong)}đ</p>
+          </div>
+          <CheckCircle className="w-10 h-10 text-white opacity-40" />
+        </div>
+        <div className="bg-gradient-to-br from-red-500 to-rose-600 rounded-xl p-4 text-white shadow-sm flex justify-between items-center border border-red-400">
+          <div>
+            <p className="text-red-100 text-xs font-semibold mb-1 uppercase tracking-wider">Doanh Số Hoàn / Hủy</p>
+            <p className="text-2xl font-extrabold">{formatMoney(revenueMetrics.hoanHuy)}đ</p>
+          </div>
+          <AlertTriangle className="w-10 h-10 text-white opacity-40" />
         </div>
       </div>
       
@@ -424,7 +455,7 @@ export function OrderManagement({ projectId }: Props) {
                   </button>
                 )}
               </h2>
-              <p className="text-sm text-gray-500 mt-1">Tìm thấy {filteredOrders.length} đơn hàng trong bảng này</p>
+              <p className="text-sm text-gray-500 mt-1">Tìm thấy {filteredOrders.length} đơn hàng trong bộ lọc này</p>
             </div>
             
             <div className="flex flex-wrap items-center gap-2">
@@ -475,32 +506,32 @@ export function OrderManagement({ projectId }: Props) {
             </div>
           )}
 
-          {/* KHUNG BẢNG CHÍNH */}
+          {/* KHUNG BẢNG CHÍNH (ĐÃ CHỈNH SỬA KÍCH THƯỚC CỘT RỘNG RÃI HƠN) */}
           <div className="flex-1 min-h-0 bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col w-full">
             <div className="flex-1 overflow-auto relative w-full">
               <table className="w-full text-sm text-left whitespace-nowrap min-w-max">
                 <thead className="sticky top-0 z-10 bg-gray-100 text-gray-700 font-semibold shadow-sm border-b border-gray-200">
                   <tr>
                     <th className="px-2 py-3 w-10 text-center border-r border-gray-200">#</th>
-                    <th className="px-2 py-3 border-r border-gray-200">Ngày HĐ</th>
-                    <th className="px-2 py-3 border-r border-gray-200 min-w-[100px]">Nguồn</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[100px]">Ngày HĐ</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[120px]">Nguồn</th>
                     {activeSheet === 'Bảng chung' && <th className="px-2 py-3 border-r border-gray-200 min-w-[120px] text-indigo-700">Thuộc Bảng</th>}
-                    <th className="px-2 py-3 border-r border-gray-200 min-w-[180px]">Khách hàng (Tên-SĐT)</th>
-                    <th className="px-2 py-3 border-r border-gray-200 min-w-[200px]">Địa chỉ giao</th>
-                    <th className="px-2 py-3 border-r border-gray-200 min-w-[180px]">Sản phẩm</th>
-                    <th className="px-2 py-3 border-r border-gray-200 w-12 text-center">SL</th>
-                    <th className="px-2 py-3 border-r border-gray-200 text-right min-w-[90px]">Đơn giá</th>
-                    <th className="px-2 py-3 border-r border-gray-200 text-right min-w-[90px]">Tổng thu</th>
-                    <th className="px-2 py-3 border-r border-gray-200 min-w-[110px]">Mã VĐ</th>
-                    <th className="px-2 py-3 border-r border-gray-200 min-w-[130px]">Trạng thái</th>
-                    <th className="px-2 py-3 border-r border-gray-200 text-right min-w-[90px]">Phí Ship</th>
-                    <th className="px-2 py-3 border-r border-gray-200 min-w-[150px]">Ghi chú</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[200px]">Khách hàng (Tên-SĐT)</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[250px]">Địa chỉ giao</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[200px]">Sản phẩm</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[60px] text-center">SL</th>
+                    <th className="px-2 py-3 border-r border-gray-200 text-right min-w-[100px]">Đơn giá</th>
+                    <th className="px-2 py-3 border-r border-gray-200 text-right min-w-[110px]">Tổng thu</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[120px]">Mã VĐ</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[140px]">Trạng thái</th>
+                    <th className="px-2 py-3 border-r border-gray-200 text-right min-w-[100px]">Phí Ship</th>
+                    <th className="px-2 py-3 border-r border-gray-200 min-w-[200px]">Ghi chú</th>
                     {(canEdit || canDelete) && <th className="px-2 py-3 text-center sticky right-0 bg-gray-100 shadow-[-5px_0_10px_rgba(0,0,0,0.05)]">Thao tác</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {filteredOrders.length === 0 ? (
-                    <tr><td colSpan={15} className="px-4 py-12 text-center text-gray-500 font-medium">Bảng này hiện chưa có đơn hàng nào.</td></tr>
+                    <tr><td colSpan={15} className="px-4 py-12 text-center text-gray-500 font-medium">Không có dữ liệu trong bộ lọc hiện tại.</td></tr>
                   ) : filteredOrders.map((order, index) => {
                     const isEditing = editingRowId === order.id;
                     const isSelected = selectedRowId === order.id;
@@ -551,7 +582,7 @@ export function OrderManagement({ projectId }: Props) {
                               <td onDoubleClick={() => startInlineEdit(order, 'sheetName')} className="px-2 py-2 font-semibold text-purple-600 border-r border-gray-100 bg-purple-50/20 cursor-pointer hover:bg-purple-100 transition-colors" title="Click đúp để chuyển đơn sang bảng khác">{order.sheetName || 'Bảng chung'}</td>
                             )}
                             <td onDoubleClick={() => startInlineEdit(order, 'customerInfo')} className="px-2 py-2 font-semibold text-indigo-700 truncate max-w-[200px] border-r border-gray-100" title={order.customerInfo}>{order.customerInfo}</td>
-                            <td onDoubleClick={() => startInlineEdit(order, 'address')} className="px-2 py-2 text-gray-600 truncate max-w-[220px] border-r border-gray-100" title={order.address}>{order.address}</td>
+                            <td onDoubleClick={() => startInlineEdit(order, 'address')} className="px-2 py-2 text-gray-600 truncate max-w-[250px] border-r border-gray-100" title={order.address}>{order.address}</td>
                             <td onDoubleClick={() => startInlineEdit(order, 'productName')} className="px-2 py-2 text-gray-800 font-medium truncate max-w-[200px] border-r border-gray-100" title={order.productName}>{order.productName}</td>
                             <td onDoubleClick={() => startInlineEdit(order, 'quantity')} className="px-2 py-2 text-center font-medium border-r border-gray-100">{order.quantity}</td>
                             <td onDoubleClick={() => startInlineEdit(order, 'price')} className="px-2 py-2 text-right text-gray-600 border-r border-gray-100">{formatMoney(order.price)}</td>
