@@ -88,7 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.reload();
   }, [setRoleData]);
 
-  // HÀM LẤY QUYỀN (ĐÃ FIX LỖI GIÁNG CẤP OAN)
+  // HÀM LẤY QUYỀN (ĐÃ FIX LỖI ĐỌC DỮ LIỆU TỪ MẢNG)
   const syncLiveRole = useCallback(async (currentSession: Session | null) => {
     if (!currentSession?.user) {
       setRoleData('viewer', {});
@@ -104,10 +104,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (supabase) {
       try {
         const { data, error } = await supabase.rpc('get_my_role');
-        // Chỉ ghi đè quyền khi DB thực sự trả về dữ liệu (Fix lỗi mất quyền Admin)
-        if (!error && data && data.role) {
-          currentRole = data.role as UserRole;
-          currentPerms = data.permissions || {};
+        
+        // Supabase RPC trả về TABLE sẽ là một mảng, ta cần lấy phần tử đầu tiên
+        const roleData = Array.isArray(data) ? data[0] : data;
+
+        // Chỉ ghi đè quyền khi DB thực sự trả về dữ liệu
+        if (!error && roleData && roleData.role) {
+          currentRole = roleData.role as UserRole;
+          currentPerms = roleData.permissions || {};
         }
       } catch (err) {
         console.error("Lỗi khi fetch live role:", err);
@@ -165,14 +169,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!isRoleSynced.current) return;
       try {
         const { data, error } = await supabase.rpc('get_my_role');
-        // Chỉ kích hoạt force logout nếu data thực sự tồn tại
-        if (!error && data && data.role) {
-          if (data.role !== roleRef.current || JSON.stringify(data.permissions || {}) !== JSON.stringify(permsRef.current)) {
+        const roleData = Array.isArray(data) ? data[0] : data;
+
+        // Kích hoạt force logout nếu có thay đổi
+        if (!error && roleData && roleData.role) {
+          if (roleData.role !== roleRef.current || JSON.stringify(roleData.permissions || {}) !== JSON.stringify(permsRef.current)) {
             handleRoleChangedForceLogout();
           }
         }
       } catch (e) {}
-    }, 30000); // Giảm từ 3s → 30s: Realtime subscription đã xử lý real-time, interval chỉ là backup
+    }, 30000); 
 
     return () => {
       supabase.removeChannel(roleSubscription);
