@@ -18,7 +18,8 @@ export function OrderManagement({ projectId }: Props) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   
-  const { checkPermission, isAdmin } = useAuth(); 
+  // Đã thêm canManage (dành riêng cho Admin và Manager)
+  const { checkPermission, isAdmin, canManage } = useAuth(); 
   const canEdit = checkPermission('orders', 'edit');
   const canDelete = checkPermission('orders', 'delete');
 
@@ -89,7 +90,6 @@ export function OrderManagement({ projectId }: Props) {
 
   const loadOrders = async () => {
     setLoading(true);
-    // Có thể truyền thêm page và pageSize nếu bạn đang dùng hàm phân trang
     const data = await fetchOrders(projectId, 1, 5000); 
     setOrders(data);
     setLoading(false);
@@ -114,7 +114,6 @@ export function OrderManagement({ projectId }: Props) {
   };
 
   // ================= THỐNG KÊ TRẠNG THÁI & DOANH SỐ =================
-  // Lấy dữ liệu thống kê từ chính danh sách ĐÃ ĐƯỢC LỌC (để hiển thị đúng số của bảng & ngày hiện tại)
   const statTotal = filteredOrders.length;
   const statUnprocessed = filteredOrders.filter(o => o.status === 'Chưa xử lý').length;
   const statDelivering = filteredOrders.filter(o => o.status === 'Đang giao hàng').length;
@@ -129,7 +128,7 @@ export function OrderManagement({ projectId }: Props) {
       const val = Number(o.total) || 0;
       const status = (o.status || '').toLowerCase().trim();
       
-      chot += val; // Mặc định mọi đơn trong bộ lọc đều là đơn chốt
+      chot += val; 
 
       if (status.includes('hủy') || status.includes('hoàn') || status.includes('boom') || status.includes('cancel')) {
         hoanHuy += val;
@@ -144,6 +143,9 @@ export function OrderManagement({ projectId }: Props) {
 
   // ================= TẠO BẢNG & XÓA BẢNG =================
   const handleAddNewSheet = () => {
+    // Chỉ Admin và Manager mới có quyền tạo
+    if (!canManage) return;
+
     const sheetName = prompt('Nhập tên Bảng quản lý mới (VD: Đơn Tháng 3, Team A...):');
     if (sheetName && sheetName.trim()) {
       const cleanName = sheetName.trim();
@@ -155,8 +157,17 @@ export function OrderManagement({ projectId }: Props) {
   };
 
   const handleDeleteSheet = async () => {
-    if (!isAdmin) return;
+    // Chỉ Admin và Manager mới có quyền xóa bảng
+    if (!canManage) return;
+    
     const isAll = activeSheet === 'Bảng chung';
+    
+    // Nếu là Manager, có thể cảnh báo thêm khi xóa Bảng chung, Admin thì thoải mái
+    if (isAll && !isAdmin) {
+      alert('Chỉ tài khoản Admin mới có quyền xóa "Bảng chung" (Tất cả đơn hàng của dự án).');
+      return;
+    }
+
     const confirmDelete = window.confirm(
       isAll 
       ? `⚠️ CẢNH BÁO NGUY HIỂM TỘT ĐỘ:\n\nBạn đang ở "Bảng chung". Việc xóa sẽ XÓA SẠCH TOÀN BỘ ĐƠN HÀNG của TẤT CẢ CÁC BẢNG trong dự án này!\n\nHành động này KHÔNG THỂ HOÀN TÁC! Bạn có chắc chắn không?`
@@ -194,7 +205,7 @@ export function OrderManagement({ projectId }: Props) {
   const handleSaveAdd = async () => {
     if (!addFormData.customerInfo.trim() || !canEdit) return;
     setIsSavingAdd(true);
-    const finalSheetName = addFormData.sheetName || (isAdmin ? 'Bảng chung' : 'Bảng Mặc định');
+    const finalSheetName = addFormData.sheetName || (canManage ? 'Bảng chung' : 'Bảng Mặc định');
     
     const newOrder = await insertOrder({ projectId, ...addFormData, sheetName: finalSheetName });
     if (newOrder) {
@@ -413,7 +424,8 @@ export function OrderManagement({ projectId }: Props) {
             {sheet}
           </button>
         ))}
-        {canEdit && (
+        {/* CHỈ ADMIN/MANAGER ĐƯỢC TẠO BẢNG */}
+        {canManage && (
           <button 
             onClick={handleAddNewSheet} 
             className="p-2 ml-1 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors shrink-0"
@@ -432,7 +444,7 @@ export function OrderManagement({ projectId }: Props) {
           </div>
           <h2 className="text-xl font-bold text-gray-700 mb-2">Hiện chưa có thông tin</h2>
           <p className="text-gray-500 mb-6">Chưa có bảng dữ liệu đơn hàng nào được tạo.</p>
-          {canEdit && (
+          {canManage && (
             <button onClick={handleAddNewSheet} className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-3 rounded-xl hover:bg-indigo-700 font-medium shadow-md transition-all">
               <Plus className="w-5 h-5" /> Tạo Bảng Mới Ngay
             </button>
@@ -445,7 +457,8 @@ export function OrderManagement({ projectId }: Props) {
             <div>
               <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
                 Đang xem: <span className="text-indigo-600">{activeSheet}</span>
-                {isAdmin && (
+                {/* CHỈ ADMIN/MANAGER ĐƯỢC XÓA BẢNG */}
+                {canManage && (
                   <button 
                     onClick={handleDeleteSheet} 
                     className="p-1.5 ml-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -506,7 +519,7 @@ export function OrderManagement({ projectId }: Props) {
             </div>
           )}
 
-          {/* KHUNG BẢNG CHÍNH (ĐÃ CHỈNH SỬA KÍCH THƯỚC CỘT RỘNG RÃI HƠN) */}
+          {/* KHUNG BẢNG CHÍNH */}
           <div className="flex-1 min-h-0 bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col w-full">
             <div className="flex-1 overflow-auto relative w-full">
               <table className="w-full text-sm text-left whitespace-nowrap min-w-max">
@@ -647,7 +660,8 @@ export function OrderManagement({ projectId }: Props) {
             
             <div className="p-6">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-                {isAdmin && (
+                {/* Chỉ ADMIN và MANAGER mới được chọn Bảng khi lưu */}
+                {canManage && (
                   <div className="lg:col-span-4 bg-purple-50 p-3 rounded-xl border border-purple-100 flex items-center gap-3">
                     <label className="text-sm font-semibold text-purple-800 shrink-0">Lưu vào bảng:</label>
                     <select value={addFormData.sheetName} onChange={e => setAddFormData({...addFormData, sheetName: e.target.value})} className="border border-purple-300 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-purple-500 outline-none text-purple-900 font-medium">
