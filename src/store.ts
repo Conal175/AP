@@ -4,13 +4,19 @@ import type { Project } from './types';
 import { toast } from './components/ui/Toast';
 
 // ==========================================
-// 1. DỮ LIỆU DỰ ÁN CỐT LÕI
+// 1. DỮ LIỆU DỰ ÁN CỐT LÕI (ĐÃ ÁP DỤNG SOFT DELETE)
 // ==========================================
 export const fetchProjects = async (): Promise<Project[]> => {
   try {
     const supabase = getSupabase();
     if (!supabase) return [];
-    const { data, error } = await supabase.from('projects').select('*').order('created_at', { ascending: false });
+    
+    // Chỉ lấy những dự án chưa bị xóa (is_deleted = false hoặc null)
+    const { data, error } = await supabase
+      .from('projects')
+      .select('*')
+      .not('is_deleted', 'eq', true) 
+      .order('created_at', { ascending: false });
     
     if (error || !data) return [];
     
@@ -38,11 +44,14 @@ export const insertProject = async (project: Project): Promise<boolean> => {
   }
 };
 
+// Đã chuyển từ Hard Delete (.delete) sang Soft Delete (.update)
 export const removeProject = async (id: string): Promise<boolean> => {
   try {
     const supabase = getSupabase();
     if (!supabase) return false;
-    const { error } = await supabase.from('projects').delete().eq('id', id);
+    
+    // Thay vì xóa vĩnh viễn, ta đánh dấu dự án này là đã xóa
+    const { error } = await supabase.from('projects').update({ is_deleted: true }).eq('id', id);
     return !error;
   } catch (err) {
     return false;
@@ -94,7 +103,7 @@ export const saveProjectData = async <T>(pid: string, key: string, items: T[]) =
 };
 
 // ==========================================
-// 3. REACT HOOK: DÙNG CHO MỌI TRANG CON (CÓ REALTIME ĐỒNG BỘ NHÓM)
+// 3. REACT HOOK: DÙNG CHO MỌI TRANG CON (REALTIME + DEBOUNCE CHỐNG SPAM API)
 // ==========================================
 export function useSyncData<T>(projectId: string, dataKey: string, initialValue: T[] = []) {
   const [data, setData] = useState<T[]>(initialValue);
@@ -150,7 +159,7 @@ export function useSyncData<T>(projectId: string, dataKey: string, initialValue:
 }
 
 // ==========================================
-// 4. API CHO BẢNG DAILY_LOGS (ĐÃ THÊM LIMIT BẢO VỆ HIỆU NĂNG)
+// 4. API CHO BẢNG DAILY_LOGS (ĐÃ THÊM LIMIT)
 // ==========================================
 import type { DailyLog } from './types';
 
@@ -162,7 +171,7 @@ export const fetchDailyLogs = async (projectId: string): Promise<DailyLog[]> => 
     .select('*')
     .eq('project_id', projectId)
     .order('created_at', { ascending: true })
-    .limit(365); // Tối đa lấy 365 ngày gần nhất để không treo máy
+    .limit(365);
 
   if (error) {
     console.error("Lỗi lấy báo cáo:", error);
@@ -170,52 +179,24 @@ export const fetchDailyLogs = async (projectId: string): Promise<DailyLog[]> => 
   }
 
   return data.map(d => ({
-    id: d.id,
-    projectId: d.project_id,
-    day: d.day,
-    month: d.month,
-    year: d.year,
-    adName: d.ad_name,
-    adLink: d.ad_link,
-    spend: Number(d.spend),
-    impressions: Number(d.impressions),
-    clicks: Number(d.clicks),
-    messages: Number(d.messages),
-    orders: Number(d.orders),
-    revenue: Number(d.revenue),
-    issues: d.issues,
-    optimizations: d.optimizations
+    id: d.id, projectId: d.project_id, day: d.day, month: d.month, year: d.year,
+    adName: d.ad_name, adLink: d.ad_link, spend: Number(d.spend), impressions: Number(d.impressions),
+    clicks: Number(d.clicks), messages: Number(d.messages), orders: Number(d.orders),
+    revenue: Number(d.revenue), issues: d.issues, optimizations: d.optimizations
   }));
 };
 
 export const insertDailyLog = async (log: Omit<DailyLog, 'id'>): Promise<DailyLog | null> => {
   const supabase = getSupabase();
   if (!supabase) return null;
-  const { data, error } = await supabase
-    .from('daily_logs')
-    .insert([{
-      project_id: log.projectId,
-      day: log.day,
-      month: log.month,
-      year: log.year,
-      ad_name: log.adName,
-      ad_link: log.adLink,
-      spend: log.spend,
-      impressions: log.impressions,
-      clicks: log.clicks,
-      messages: log.messages,
-      orders: log.orders,
-      revenue: log.revenue,
-      issues: log.issues,
-      optimizations: log.optimizations
-    }])
-    .select()
-    .single();
+  const { data, error } = await supabase.from('daily_logs').insert([{
+    project_id: log.projectId, day: log.day, month: log.month, year: log.year,
+    ad_name: log.adName, ad_link: log.adLink, spend: log.spend, impressions: log.impressions,
+    clicks: log.clicks, messages: log.messages, orders: log.orders, revenue: log.revenue,
+    issues: log.issues, optimizations: log.optimizations
+  }]).select().single();
 
-  if (error) {
-    toast.error(`Lỗi thêm báo cáo: ${error.message}`);
-    return null;
-  }
+  if (error) { toast.error(`Lỗi thêm báo cáo: ${error.message}`); return null; }
   
   return {
     id: data.id, projectId: data.project_id, day: data.day, month: data.month, year: data.year,
@@ -255,45 +236,35 @@ export const deleteDailyLog = async (id: string): Promise<boolean> => {
 };
 
 // ==========================================
-// 5. API CHO BẢNG ORDERS (ĐÃ THÊM LIMIT BẢO VỆ HIỆU NĂNG)
+// 5. API CHO BẢNG ORDERS (ĐÃ THÊM PHÂN TRANG)
 // ==========================================
 export interface Order {
-  id: string;
-  projectId: string;
-  sheetName: string;
-  orderDate: string;
-  source: string;
-  customerInfo: string;
-  address: string;
-  productName: string;
-  quantity: number;
-  price: number;
-  total: number;
-  notes: string;
-  shippingDate: string;
-  trackingCode: string;
-  status: string;
-  shippingFee: number;
+  id: string; projectId: string; sheetName: string; orderDate: string; source: string; customerInfo: string;
+  address: string; productName: string; quantity: number; price: number; total: number; notes: string;
+  shippingDate: string; trackingCode: string; status: string; shippingFee: number;
 }
 
-export const fetchOrders = async (projectId: string): Promise<Order[]> => {
+export const fetchOrders = async (projectId: string, page: number = 1, pageSize: number = 500): Promise<Order[]> => {
   const supabase = getSupabase();
   if (!supabase) return [];
+
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
   const { data, error } = await supabase
     .from('orders')
     .select('*')
     .eq('project_id', projectId)
     .order('order_date', { ascending: false })
-    .limit(500); // Tối đa lấy 500 đơn hàng mới nhất
+    .range(from, to);
 
   if (error) return [];
 
   return data.map(d => ({
-    id: d.id, projectId: d.project_id, sheetName: d.sheet_name || 'Bảng chung',
-    orderDate: d.order_date || '', source: d.source || '', customerInfo: d.customer_info || '',
-    address: d.address || '', productName: d.product_name || '', quantity: Number(d.quantity),
-    price: Number(d.price), total: Number(d.total), notes: d.notes || '', shippingDate: d.shipping_date || '',
-    trackingCode: d.tracking_code || '', status: d.status || '', shippingFee: Number(d.shipping_fee)
+    id: d.id, projectId: d.project_id, sheetName: d.sheet_name || 'Bảng chung', orderDate: d.order_date || '',
+    source: d.source || '', customerInfo: d.customer_info || '', address: d.address || '', productName: d.product_name || '',
+    quantity: Number(d.quantity), price: Number(d.price), total: Number(d.total), notes: d.notes || '',
+    shippingDate: d.shipping_date || '', trackingCode: d.tracking_code || '', status: d.status || '', shippingFee: Number(d.shipping_fee)
   }));
 };
 
